@@ -22,6 +22,15 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/F3LP5/trivium-ai/archive/refs/heads/main.zip">
+    <img src="https://img.shields.io/badge/⚡_Download_Trivium_(ZIP)-Windows_Launcher-FFE500?style=for-the-badge&logo=windows&logoColor=FFE500&labelColor=0A0A0C" alt="Download ZIP" height="38" />
+  </a>
+  <a href="https://github.com/F3LP5/trivium-ai/releases/latest">
+    <img src="https://img.shields.io/badge/🏷️_Release-v1.0.0-10B981?style=for-the-badge&labelColor=0A0A0C" alt="Latest Release" height="38" />
+  </a>
+</p>
+
+<p align="center">
   <a href="#-overview">Overview</a> •
   <a href="#-key-features">Key Features</a> •
   <a href="#-how-you-learn">How You Learn</a> •
@@ -189,10 +198,9 @@ flowchart TD
 
 ### Option A: Windows 1-Click Launcher (Easiest)
 
-No manual setup required. The launcher sets up Python, Node, and dependencies automatically:
-
+1. **[Click here to Download Trivium (ZIP)](https://github.com/F3LP5/trivium-ai/archive/refs/heads/main.zip)** and extract the archive to your computer.
+2. Inside the extracted folder, double-click:
 ```powershell
-# Double-click the launcher or run in terminal:
 .\Trivium-Launcher.bat
 ```
 
