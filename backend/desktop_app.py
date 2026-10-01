@@ -8,10 +8,14 @@ import atexit
 import shutil
 import urllib.request
 from pathlib import Path
-import webview
-
-# Força o uso estrito do motor moderno Edge Chromium (WebView2)
-os.environ["PYWEBVIEW_GUI"] = "edgechromium"
+try:
+    import webview
+    HAS_WEBVIEW = True
+    # Força o uso estrito do motor moderno Edge Chromium (WebView2)
+    os.environ["PYWEBVIEW_GUI"] = "edgechromium"
+except Exception:
+    HAS_WEBVIEW = False
+    webview = None
 
 # Registra o AppUserModelID para o Windows exibir o ícone correto na barra de tarefas
 try:
@@ -258,34 +262,54 @@ def main():
         cleanup()
         sys.exit(1)
 
-    if DEBUG_MODE:
-        print("[Trivium Debug] Servidores online! Abrindo janela desktop...")
-
-    # Cria janela nativa do Desktop com proporções confortáveis
-    window = webview.create_window(
-        title="Trivium - Rigor, Lógica e Maestria",
-        url=frontend_url,
-        width=1380,
-        height=880,
-        min_size=(1024, 700),
-        background_color="#0b0b0b",
-        confirm_close=False,
-        text_select=True,
-        zoomable=True,
-    )
-
-    window.events.closed += cleanup
-    atexit.register(cleanup)
-
-    try:
-        webview.start(gui="edgechromium", debug=DEBUG_MODE)
-    except Exception as e:
-        if DEBUG_MODE:
-            print(f"[Trivium] Inicialização com gui='edgechromium' reportou: {e}. Tentando fallback padrão...")
+    if HAS_WEBVIEW and webview is not None:
         try:
-            webview.start(debug=DEBUG_MODE)
-        finally:
-            cleanup()
+            if DEBUG_MODE:
+                print("[Trivium Debug] Servidores online! Abrindo janela desktop...")
+
+            # Cria janela nativa do Desktop com proporções confortáveis
+            window = webview.create_window(
+                title="Trivium - Rigor, Lógica e Maestria",
+                url=frontend_url,
+                width=1380,
+                height=880,
+                min_size=(1024, 700),
+                background_color="#0b0b0b",
+                confirm_close=False,
+                text_select=True,
+                zoomable=True,
+            )
+
+            window.events.closed += cleanup
+            atexit.register(cleanup)
+
+            try:
+                webview.start(gui="edgechromium", debug=DEBUG_MODE)
+                return
+            except Exception as e:
+                if DEBUG_MODE:
+                    print(f"[Trivium] Inicialização com gui='edgechromium' reportou: {e}. Tentando fallback padrão...")
+                try:
+                    webview.start(debug=DEBUG_MODE)
+                    return
+                except Exception as e2:
+                    if DEBUG_MODE:
+                        print(f"[Trivium] Falha na janela nativa ({e2}). Abrindo no navegador...")
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[Trivium] Falha ao configurar webview ({e}). Abrindo no navegador...")
+
+    # Fallback garantido: abre no navegador padrão do usuário
+    print(f"[Trivium] Servidores online! Abrindo {frontend_url} no seu navegador...")
+    import webbrowser
+    webbrowser.open(frontend_url)
+    atexit.register(cleanup)
+    print("[Trivium] Aplicativo rodando! Pressione Ctrl+C para encerrar os servidores.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
     finally:
         cleanup()
 
