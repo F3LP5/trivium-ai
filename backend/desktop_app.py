@@ -17,6 +17,10 @@ except Exception:
     HAS_WEBVIEW = False
     webview = None
 
+# Garante que conexões locais com 127.0.0.1 nunca passem por proxies do Windows/antivírus
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
+
 # Registra o AppUserModelID para o Windows exibir o ícone correto na barra de tarefas
 try:
     if sys.platform == 'win32':
@@ -108,15 +112,17 @@ def is_port_in_use(host: str, port: int) -> bool:
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
+NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 def is_http_ready(url: str, timeout: float = 1.2) -> bool:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Trivium-Desktop/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with NO_PROXY_OPENER.open(req, timeout=timeout) as response:
             return response.status in (200, 304)
     except Exception:
         return False
 
-def wait_for_http(url: str, port: int, timeout: float = 40.0) -> bool:
+def wait_for_http(url: str, port: int, timeout: float = 40.0, check_proc=None) -> bool:
     """
     Aguarda a prontidão real HTTP (200/304). Quando o Next.js responde 200,
     aguarda um curto intervalo para assegurar que os arquivos CSS e JS estejam
@@ -124,6 +130,10 @@ def wait_for_http(url: str, port: int, timeout: float = 40.0) -> bool:
     """
     start_time = time.time()
     while time.time() - start_time < timeout:
+        if check_proc and check_proc.poll() is not None:
+            if DEBUG_MODE:
+                print(f"[Trivium ERRO] Processo na porta {port} encerrou prematuramente com código {check_proc.returncode}!")
+            return False
         if is_http_ready(url):
             time.sleep(0.8)  # Margem segura para carregamento pleno de chunks CSS/JS
             return True
@@ -154,6 +164,9 @@ def cleanup():
         print("\n[Trivium] Encerrando servidores locais do Trivium (:8000 e :3000)...")
     for port in [8000, 3000]:
         kill_port_tree(port)
+
+BACKEND_PROC = None
+BACKEND_LOG_PATH = BACKEND_DIR / "storage" / "backend.log"
 
 def start_services_if_needed():
     """
@@ -190,9 +203,14 @@ def start_services_if_needed():
             backend_cmd = ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
 
         try:
-            subprocess.Popen(
+            BACKEND_DIR.joinpath("storage").mkdir(parents=True, exist_ok=True)
+            log_file = open(BACKEND_LOG_PATH, "w", encoding="utf-8", buffering=1)
+            global BACKEND_PROC
+            BACKEND_PROC = subprocess.Popen(
                 backend_cmd,
                 cwd=str(BACKEND_DIR),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 creationflags=cflags,
                 shell=False
             )
@@ -240,7 +258,7 @@ def main():
         print("[Trivium Debug] Aguardando prontidão dos serviços...")
         print(" - [1/2] Verificando Backend FastAPI (:8000)...")
 
-    backend_ok = wait_for_http("http://127.0.0.1:8000/docs", 8000, timeout=40.0)
+    backend_ok = wait_for_http("http://127.0.0.1:8000/docs", 8000, timeout=40.0, check_proc=BACKEND_PROC)
 
     if DEBUG_MODE:
         print(" - [2/2] Verificando Frontend Next.js (:3000)...")
@@ -250,10 +268,24 @@ def main():
     if not backend_ok or not frontend_ok:
         msg = "Não foi possível conectar aos servidores locais do Trivium:\n"
         if not backend_ok:
-            msg += " • Backend FastAPI (:8000) não respondeu a tempo.\n"
+            msg += " • Backend FastAPI (:8000) não respondeu.\n"
+            log_snippet = ""
+            if BACKEND_LOG_PATH.exists():
+                try:
+                    with open(BACKEND_LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = [l for l in f.readlines() if l.strip()]
+                        log_snippet = "".join(lines[-12:])
+                except Exception:
+                    pass
+            if log_snippet:
+                if DEBUG_MODE:
+                    print("\n================ DETALHES DO ERRO DO BACKEND ================")
+                    print(log_snippet)
+                    print("=============================================================\n")
+                msg += f"\nDetalhes do erro:\n{log_snippet[:350]}\n"
         if not frontend_ok:
             msg += " • Frontend Next.js (:3000) não respondeu a tempo.\n"
-        msg += "\nVerifique se o Node.js e o Python estão instalados ou execute Trivium-Dev-Console.bat para depurar."
+        msg += "\nExecute Trivium-Dev-Console.bat para verificar os logs completos."
         
         if sys.platform == "win32":
             ctypes.windll.user32.MessageBoxW(0, msg, "Trivium Academy - Erro de Inicialização", 0x10)

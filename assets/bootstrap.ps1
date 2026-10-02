@@ -62,8 +62,20 @@ if (Test-Path (Join-Path $portableNodeDir "node.exe")) {
 $backendDir = Join-Path $root "backend"
 $venvPython = Join-Path $backendDir ".venv\Scripts\python.exe"
 
-if (-not (Test-Path $venvPython)) {
-    Write-Host "[2/4] Preparando ambiente Python (3.12)..." -ForegroundColor Yellow
+# Verifica se o backend realmente tem os módulos essenciais funcionando
+$backendReady = $false
+if (Test-Path $venvPython) {
+    try {
+        $testCode = "import fastapi, uvicorn, sqlmodel, litellm; print('TRIVIUM_DEPS_OK')"
+        $checkRes = & $venvPython -c $testCode 2>$null
+        if ($checkRes -match "TRIVIUM_DEPS_OK") {
+            $backendReady = $true
+        }
+    } catch {}
+}
+
+if (-not $backendReady) {
+    Write-Host "[2/4] Preparando ambiente Python (3.12) e instalando dependencias..." -ForegroundColor Yellow
     
     $uvBin = $null
     $possibleUv = @(
@@ -94,19 +106,27 @@ if (-not (Test-Path $venvPython)) {
     }
 
     if (-not $uvBin) {
-        throw "Nao foi possivel instalar o gerenciador Python UV."
+        throw "Nao foi possivel encontrar ou instalar o gerenciador Python UV."
     }
 
-    Write-Host "      Criando ambiente virtual com Python 3.12..." -ForegroundColor Gray
-    & $uvBin venv (Join-Path $backendDir ".venv") --python 3.12
-    Write-Host "      Instalando dependencias do backend (FastAPI, PyWebView, LiteLLM)..." -ForegroundColor Gray
-    $reqFile = Join-Path $backendDir "requirements.txt"
-    & $uvBin pip install -r $reqFile --python $venvPython
-    Write-Host "      Configurando Chromium para geracao de PDFs (Playwright)..." -ForegroundColor Gray
-    & $venvPython -m playwright install chromium
+    Push-Location $backendDir
+    try {
+        Write-Host "      Criando ambiente virtual com Python 3.12..." -ForegroundColor Gray
+        & $uvBin venv .venv --python 3.12
+        Write-Host "      Instalando pacotes do backend (FastAPI, SQLModel, LiteLLM, PyWebView)..." -ForegroundColor Gray
+        & $uvBin pip install -r "requirements.txt"
+        Write-Host "      Configurando Chromium para exportacao de PDFs..." -ForegroundColor Gray
+        try {
+            & ".\.venv\Scripts\python.exe" -m playwright install chromium
+        } catch {
+            Write-Host "      (Aviso: Playwright podera ser configurado sob demanda)" -ForegroundColor DarkGray
+        }
+    } finally {
+        Pop-Location
+    }
     Write-Host "[OK] Backend configurado com sucesso!" -ForegroundColor Green
 } else {
-    Write-Host "[OK] Backend e ambiente Python ja configurados." -ForegroundColor Green
+    Write-Host "[OK] Backend e dependencias Python ja verificados e prontos." -ForegroundColor Green
 }
 
 # 4. Frontend Next.js (Instalação e Build)
