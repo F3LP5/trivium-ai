@@ -165,16 +165,42 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
     setMounted(true);
   }, []);
 
-  const handleSelectImageProvider = (providerId: string) => {
+  const handleSelectImageProvider = async (providerId: string) => {
     setImageProvider(providerId);
+    let chosenModel = imageModel;
     if (providerId === "openai" && (!imageModel || imageModel.includes("flux") || imageModel.includes("imagen"))) {
+      chosenModel = "dall-e-3";
       setImageModel("dall-e-3");
     } else if (providerId === "fal" && (!imageModel || imageModel.includes("dall-e") || imageModel.includes("imagen"))) {
+      chosenModel = "fal-ai/flux/schnell";
       setImageModel("fal-ai/flux/schnell");
     } else if (providerId === "google" && (!imageModel || imageModel.includes("dall-e") || imageModel.includes("flux"))) {
+      chosenModel = "imagen-3.0-generate-002";
       setImageModel("imagen-3.0-generate-002");
     } else if (providerId === "huggingface" && (!imageModel || imageModel.includes("dall-e") || imageModel.includes("imagen"))) {
+      chosenModel = "black-forest-labs/FLUX.1-schnell";
       setImageModel("black-forest-labs/FLUX.1-schnell");
+    }
+    try {
+      const updated = await updateSettings({ image_provider: providerId, image_model: chosenModel });
+      setSettings(updated);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (err: unknown) {
+      console.error("Falha ao salvar provedor de imagem automaticamente:", err);
+    }
+  };
+
+  const handleSelectLlmProvider = async (provider: "openrouter" | "openai" | "anthropic" | "local") => {
+    setLlmProvider(provider);
+    setError(null);
+    try {
+      const updated = await updateSettings({ llm_provider: provider });
+      setSettings(updated);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (err: unknown) {
+      console.error("Falha ao salvar provedor de IA automaticamente:", err);
     }
   };
 
@@ -495,7 +521,7 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
                       {/* OpenRouter Card */}
                       <button
                         type="button"
-                        onClick={() => setLlmProvider("openrouter")}
+                        onClick={() => handleSelectLlmProvider("openrouter")}
                         className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-4 ${
                           llmProvider === "openrouter"
                             ? "bg-[#6366F1]/10 border-[#818CF8] shadow-lg shadow-[#6366F1]/15 ring-1 ring-[#818CF8]"
@@ -539,7 +565,7 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
                       {/* OpenAI Card */}
                       <button
                         type="button"
-                        onClick={() => setLlmProvider("openai")}
+                        onClick={() => handleSelectLlmProvider("openai")}
                         className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-4 ${
                           llmProvider === "openai"
                             ? "bg-[#10A37F]/10 border-[#10A37F] shadow-lg shadow-[#10A37F]/15 ring-1 ring-[#10A37F]"
@@ -583,7 +609,7 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
                       {/* Anthropic Card */}
                       <button
                         type="button"
-                        onClick={() => setLlmProvider("anthropic")}
+                        onClick={() => handleSelectLlmProvider("anthropic")}
                         className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-4 ${
                           llmProvider === "anthropic"
                             ? "bg-[#D97757]/10 border-[#D97757] shadow-lg shadow-[#D97757]/15 ring-1 ring-[#D97757]"
@@ -627,7 +653,7 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
                       {/* Local / Ollama Card */}
                       <button
                         type="button"
-                        onClick={() => setLlmProvider("local")}
+                        onClick={() => handleSelectLlmProvider("local")}
                         className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-4 ${
                           llmProvider === "local"
                             ? "bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/15 ring-1 ring-amber-500"
