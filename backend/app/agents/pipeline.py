@@ -715,6 +715,7 @@ class WriterAgent:
                 f"- Finalize com '## Glossário da Aula' e '## Fontes e Leituras Recomendadas da Aula'.\n\n"
 
                 f"LEMBRE-SE: PROIBIÇÃO ABSOLUTA DA PRIMEIRA PESSOA ('EU', 'PERCEBI', ETC.), DO SÍMBOLO '—' (travessão), DE EMOJIS NOS TÍTULOS E DE ADJETIVAÇÃO VAZIA SEM DADOS. PRECISÃO LEXICAL ACIMA DE EFEITO POÉTICO: NUNCA USE UMA PALAVRA CUJO SIGNIFICADO EXATO NÃO SEJA CERTO; PREFIRA SEMPRE A ALTERNATIVA MAIS SIMPLES E CORRETA."
+            )
         lesson_token_budget = min(2400, max(1400, int(target_words * 2.2)))
         raw_text = await LLMGateway.generate_text(system_prompt, user_prompt, max_tokens=lesson_token_budget, timeout=40)
         # Sanitização e normalização de cabeçalhos markdown
