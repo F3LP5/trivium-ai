@@ -8,7 +8,7 @@ import asyncio
 import time
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlmodel import Session, select
 from app.database import engine
 from app.models.entities import Course, Module, Lesson, GenerationJob
@@ -98,7 +98,7 @@ class CourseOrchestrator:
                     job.progress_pct = pct
                     job.current_step = step
                     job.status = status
-                    job.updated_at = datetime.utcnow()
+                    job.updated_at = datetime.now(timezone.utc)
                     if error:
                         job.error_message = error
                     if course_id:
@@ -140,7 +140,7 @@ class CourseOrchestrator:
 
             t_post_research = time.time()
             CourseOrchestrator.job_timings[job_id]["t_post_research"] = t_post_research
-            print(f"[Orchestrator] Pesquisa concluída em {datetime.utcnow().isoformat()}. Iniciando cronômetro estrito de geração (SLA: <= 6 min)...", flush=True)
+            print(f"[Orchestrator] Pesquisa concluída em {datetime.now(timezone.utc).isoformat()}. Iniciando cronômetro estrito de geração (SLA: <= 6 min)...", flush=True)
 
             update_job(8, f"Construindo a Matriz Curricular ({num_modules} módulos)...")
             try:

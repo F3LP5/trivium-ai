@@ -1,13 +1,16 @@
 from typing import Optional, List
 from sqlmodel import SQLModel, Field, Relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+
+def get_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 class Course(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     subject: str = Field(index=True)
     level: str = Field(index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=get_utc_now)
     is_completed: bool = Field(default=False)
     language: str = Field(default="pt-BR", index=True)
     access_mode: str = Field(default="open") # "open" ou "guided"
@@ -63,7 +66,7 @@ class LessonChatMessage(SQLModel, table=True):
     lesson_id: int = Field(foreign_key='lesson.id', index=True)
     role: str = Field(index=True) # "user" | "assistant"
     content: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=get_utc_now)
 
     lesson: Optional[Lesson] = Relationship(back_populates='chat_messages')
 
@@ -74,5 +77,5 @@ class GenerationJob(SQLModel, table=True):
     progress_pct: int = Field(default=0)
     current_step: str = Field(default='Iniciando...')
     error_message: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=get_utc_now)
+    updated_at: datetime = Field(default_factory=get_utc_now)

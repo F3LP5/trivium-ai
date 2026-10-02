@@ -4,12 +4,13 @@ import json
 import shutil
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, delete
 from pydantic import BaseModel
+import logging
 
 from app.database import init_db, get_session, engine
 from app.models.entities import Course, Module, Lesson, GenerationJob, LessonChatMessage
@@ -30,6 +31,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger = logging.getLogger("trivium")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Erro não tratado na rota {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Erro interno do servidor: {str(exc)}"}
+    )
 
 from app.services.settings_service import SettingsService
 

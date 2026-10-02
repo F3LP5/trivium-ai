@@ -169,13 +169,23 @@ export interface JobStatusResponse {
 }
 
 export async function createCourse(subject: string, level: string = "Básico", language: string = "pt-BR"): Promise<{ job_id: string }> {
-  const res = await fetch(`${API_BASE_URL}/api/courses/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject, level, language }),
-  });
-  if (!res.ok) throw new Error("Falha ao iniciar criação do curso");
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/courses/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject, level, language }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Falha ao iniciar criação do curso" }));
+      throw new Error(err.detail || "Falha ao iniciar criação do curso");
+    }
+    return res.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError && (err.message === "Failed to fetch" || err.message.includes("fetch"))) {
+      throw new Error("Não foi possível conectar ao servidor backend (porta 8000). Verifique se o Trivium está em execução.");
+    }
+    throw err;
+  }
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
@@ -473,16 +483,23 @@ export async function generateCourseFromDocument(
   level?: string,
   language: string = "pt-BR"
 ): Promise<{ job_id: string; status: string; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/api/courses/generate-from-document`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: docId, subject, level, language }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: "Falha ao iniciar geração a partir do documento" }));
-    throw new Error(err.detail || "Falha ao iniciar curso");
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/courses/generate-from-document`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_id: docId, subject, level, language }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Falha ao iniciar geração a partir do documento" }));
+      throw new Error(err.detail || "Falha ao iniciar curso");
+    }
+    return res.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError && (err.message === "Failed to fetch" || err.message.includes("fetch"))) {
+      throw new Error("Não foi possível conectar ao servidor backend (porta 8000). Verifique se o Trivium está em execução.");
+    }
+    throw err;
   }
-  return res.json();
 }
 
 
