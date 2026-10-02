@@ -519,7 +519,7 @@ class LLMGateway:
                             extra_headers=AGENTIC_HEADERS,
                             extra_body={"reasoning": {"max_tokens": 10}}
                         ),
-                        timeout=4.5
+                        timeout=6.0
                     )
 
                 try:
@@ -695,12 +695,12 @@ class LLMGateway:
                     sample_text = text_w[:90].replace("\n", " ") + "..."
 
                     # Compliance estrita da redação
-                    writer_ok = (words >= 100 and not has_first_person and not has_em_dash and tps >= 25.0)
+                    writer_ok = (words >= 90 and not has_first_person and not has_em_dash and tps >= 16.0)
                     reasons = []
-                    if words < 100: reasons.append(f"Apenas {words} palavras")
+                    if words < 90: reasons.append(f"Apenas {words} palavras")
                     if has_first_person: reasons.append("Usou 1ª pessoa")
                     if has_em_dash: reasons.append("Usou travessão")
-                    if tps < 25.0: reasons.append(f"TPS lento: {tps} t/s (< 25)")
+                    if tps < 16.0: reasons.append(f"TPS lento: {tps} t/s (< 16)")
                     writer_err = ", ".join(reasons)
                 except Exception as ex_w:
                     writer_time = round(time.time() - t_w0, 2)
@@ -730,9 +730,9 @@ class LLMGateway:
                     score += 10
 
                 # Bônus de Throughput / Rapidez
-                if tps >= 45.0:
+                if tps >= 35.0:
                     score += 10
-                elif tps >= 25.0:
+                elif tps >= 18.0:
                     score += 5
 
                 avg_latency = round((json_time + writer_time) / 2, 2)
@@ -753,18 +753,18 @@ class LLMGateway:
                 if has_first_person: compliance_notes.append("1ª Pessoa")
                 if has_em_dash: compliance_notes.append("Travessão")
 
-                # REQUISITO DE HOMOLOGAÇÃO ESTREITO PARA O FRAMEWORK:
-                # 1. Score Composto >= 75
-                # 2. JSON Schema 100% válido
-                # 3. Redação 100% compliant
-                # 4. Throughput mínimo >= 25 tokens/s (elimina modelos lerdos que estouram timeouts)
-                is_success = (score >= 75 and json_ok and writer_ok and tps >= 25.0)
+                # REQUISITO DE HOMOLOGAÇÃO CALIBRADO:
+                # 1. Score Composto >= 65 (permite modelos de retaguarda estáveis)
+                # 2. JSON Schema 100% válido (intocável)
+                # 3. Redação compliant (sem 1ª pessoa, sem travessão)
+                # 4. Throughput mínimo >= 16.0 tokens/s (garante fluidez sem gargalos excessivos)
+                is_success = (score >= 65 and json_ok and writer_ok and tps >= 16.0)
                 error_msg = ""
                 if not is_success:
                     if not json_ok:
                         error_msg = f"Falha no JSON: {json_err}"
                     else:
-                        error_msg = f"Redação/Throughput insuficiente: {writer_err or 'Score < 75'}"
+                        error_msg = f"Redação/Throughput insuficiente: {writer_err or 'Score < 65'}"
 
                 return {
                     "model": model_id,
@@ -793,13 +793,14 @@ class LLMGateway:
         all_rejected = pruned_layer0 + pruned_layer1 + rejected_op
 
         total_time = round(time.time() - t_start, 2)
-        recommended_csv = ", ".join([a["model"] for a in approved])
+        top_approved = approved[:5]
+        recommended_csv = ", ".join([a["model"] for a in top_approved])
 
-        # Auto-save imediato no settings.json se houver modelos aprovados
-        if approved:
+        # Auto-save imediato no settings.json com os top 4-5 modelos homologados
+        if top_approved:
             try:
                 SettingsService.update_settings({"openrouter_models": recommended_csv})
-                print(f"[LLMGateway] Modelos homologados atualizados com sucesso ({len(approved)} aprovados): {recommended_csv}")
+                print(f"[LLMGateway] Modelos homologados atualizados com sucesso ({len(top_approved)} no cluster ativo de {len(approved)} aprovados): {recommended_csv}")
             except Exception as save_err:
                 print(f"[LLMGateway] Aviso ao persistir modelos homologados: {save_err}")
 
