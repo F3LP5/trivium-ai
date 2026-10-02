@@ -346,13 +346,12 @@ class LLMGateway:
     @staticmethod
     async def benchmark_free_models() -> dict:
         """
-        Executa uma auditoria concorrente fail-fast (< 2 minutos) em todos os modelos gratuitos do OpenRouter.
-        Avalia aderência real ao framework Trivium:
-        1. Conformidade com regras de redação (sem primeira pessoa 'eu', sem travessão '—')
-        2. Capacidade de densidade textual (contagem de palavras e desenvolvimento)
-        3. Suporte a JSON e estrutura analítica
-        4. Latência e estabilidade da API
-        Ranqueia com score composto (0-100) priorizando os melhores para a esteira Trivium.
+        Executa uma auditoria fail-fast de nível industrial em 4 camadas para os modelos gratuitos do OpenRouter:
+        Camada 0: Pré-Filtragem em Memória (contexto >= 8k, descarta modelos de código, segurança e embeddings)
+        Camada 1: Smoke Ping Concorrente (< 3s) - Elimina instantaneamente modelos 404, 403, 429 ou mortos
+        Camada 2: Provas Operacionais E2E (Curator Schema Pydantic sem placeholders + Redação Pedagógica Densa)
+        Camada 3: Motor Avaliador Semântico (Score 0-100, nota de corte >= 70)
+        Camada 4: Auto-Save no settings.json e ordenação por excelência
         """
         import urllib.request
         import time
@@ -360,6 +359,8 @@ class LLMGateway:
 
         t_start = time.time()
         api_key = SettingsService.get_settings().get("openrouter_api_key") or os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("Chave de API do OpenRouter não configurada. Insira sua chave antes de executar o teste.")
 
         try:
             req = urllib.request.Request(
@@ -368,145 +369,346 @@ class LLMGateway:
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))["data"]
-                free_models = [m["id"] for m in data if ":free" in m.get("id", "")]
         except Exception as err:
             raise RuntimeError(f"Falha ao consultar catálogo de modelos do OpenRouter: {err}")
 
-        # Filtra modelos de nicho estrito irrelevantes para geração de texto (ex: safety filters)
-        ignored_models = {"nvidia/nemotron-3.5-content-safety:free"}
-        target_models = [m for m in free_models if m not in ignored_models]
+        # --- CAMADA 0: Pré-Filtragem em Memória ---
+        # Filtra apenas modelos com :free
+        free_raw = [m for m in data if ":free" in m.get("id", "")]
+        total_scanned = len(free_raw)
 
-        # Limite concorrente para evitar 429 mas terminar em menos de 2 minutos
-        sem = asyncio.Semaphore(5)
+        # Regras de descarte estrito (modelos que não servem para raciocínio/redação geral do Trivium)
+        pruned_layer0 = []
+        candidates_layer0 = []
 
-        # Probe realista do framework Trivium: micro-aula com regras estritas
-        test_system = (
-            "Você é um professor catedrático da Trivium Academy. "
-            "Escreva uma mini-aula didática de introdução sobre 'Como a Internet Funciona' para nível Iniciante.\n"
-            "REGRAS ESTRITAS DE COMPLIANCE:\n"
-            "1. PROIBIDO usar primeira pessoa do singular ('eu', 'percebi', 'acho')!\n"
-            "2. PROIBIDO usar o símbolo travessão ('—' ou '–')!\n"
-            "3. Desenvolva no mínimo 150 palavras explicando a diferença entre roteador e internet com uma analogia simples.\n"
-            "4. Inclua um bloco '> Regra de Ouro: [princípio em 1 frase]'.\n"
-            "5. Responda em Markdown limpo."
-        )
-        test_user = "Redija a mini-aula agora cumprindo rigorosamente as 4 regras sem desculpas nem metadiscurso."
+        for m in free_raw:
+            m_id = m.get("id", "").lower()
+            ctx = m.get("context_length", 0) or 0
+            if any(k in m_id for k in ["code", "coder", "-mini-code"]):
+                pruned_layer0.append({"model": m["id"], "success": False, "error": "Descartado: Modelo especializado em código", "latency": 0.0, "score": 0})
+            elif any(k in m_id for k in ["safety", "guard", "moderation"]):
+                pruned_layer0.append({"model": m["id"], "success": False, "error": "Descartado: Filtro de segurança/moderação", "latency": 0.0, "score": 0})
+            elif "embed" in m_id:
+                pruned_layer0.append({"model": m["id"], "success": False, "error": "Descartado: Modelo de embeddings", "latency": 0.0, "score": 0})
+            elif ctx and ctx < 8192:
+                pruned_layer0.append({"model": m["id"], "success": False, "error": f"Descartado: Janela de contexto insuficiente ({ctx} tokens)", "latency": 0.0, "score": 0})
+            else:
+                candidates_layer0.append(m["id"])
 
-        async def _probe_single(model_id: str):
-            async with sem:
+        # --- CAMADA 1: Smoke Ping Concorrente (< 3s) ---
+        smoke_sem = asyncio.Semaphore(8)
+
+        async def _smoke_ping(model_id: str):
+            async with smoke_sem:
                 t0 = time.time()
                 try:
                     res = await asyncio.wait_for(
                         litellm.acompletion(
                             model=f"openrouter/{model_id}",
                             api_key=api_key,
-                            messages=[
-                                {"role": "system", "content": test_system},
-                                {"role": "user", "content": test_user}
-                            ],
-                            max_tokens=650,
+                            messages=[{"role": "user", "content": "1"}],
+                            max_tokens=5,
                             extra_headers=AGENTIC_HEADERS,
-                            extra_body={"reasoning": {"max_tokens": 120}}
+                            extra_body={"reasoning": {"max_tokens": 10}}
                         ),
-                        timeout=30.0
+                        timeout=3.5
                     )
                     elapsed = round(time.time() - t0, 2)
-                    if not res or not getattr(res, "choices", None) or not res.choices:
-                        return {"model": model_id, "success": False, "error": "Resposta vazia da API", "latency": elapsed, "score": 0}
-
-                    msg = res.choices[0].message
-                    content = getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or ""
-                    if not str(content).strip() and hasattr(res.choices[0], "provider_specific_fields") and isinstance(res.choices[0].provider_specific_fields, dict):
-                        content = res.choices[0].provider_specific_fields.get("reasoning", "")
-                    
-                    text = str(content).strip()
-                    if not text:
-                        return {"model": model_id, "success": False, "error": "Conteúdo nulo ou consumido só em reasoning", "latency": elapsed, "score": 0}
-
-                    # Avaliação analítica de aderência ao Framework Trivium (Score 0-100)
-                    words = len(re.findall(r'\b\w+\b', text))
-                    
-                    # 1. Checagem de Proibições Trivium
-                    has_first_person = bool(re.search(r'\b(eu|percebi|acho|minha opini[aã]o|acredito)\b', text, flags=re.IGNORECASE))
-                    has_em_dash = bool(re.search(r'[—–]', text))
-                    has_golden_rule = bool(re.search(r'Regra de Ouro', text, flags=re.IGNORECASE))
-
-                    # 2. Cálculo do Score de Conformidade
-                    # Base por resposta válida: 30 pontos
-                    score = 30
-                    
-                    # Volume textual (até 35 pontos) - penaliza modelos telegráficos/curtos
-                    if words >= 140:
-                        score += 35
-                    elif words >= 90:
-                        score += 20
-                    else:
-                        score += 8
-                    
-                    # Cumprimento de regras editoriais (até 25 pontos)
-                    if not has_first_person:
-                        score += 10
-                    if not has_em_dash:
-                        score += 10
-                    if has_golden_rule:
-                        score += 5
-
-                    # Bônus de Latência (até 10 pontos)
-                    if elapsed < 8.0:
-                        score += 10
-                    elif elapsed < 16.0:
-                        score += 5
-
-                    # Flags de conformidade
-                    compliance_notes = []
-                    if words >= 140:
-                        compliance_notes.append("Denso")
-                    else:
-                        compliance_notes.append("Curto")
-                    if not has_first_person and not has_em_dash:
-                        compliance_notes.append("Regras OK")
-                    else:
-                        if has_first_person: compliance_notes.append("Usou 1ª Pessoa")
-                        if has_em_dash: compliance_notes.append("Usou Travessão")
-
-                    return {
-                        "model": model_id,
-                        "success": True,
-                        "score": score,
-                        "words": words,
-                        "latency": elapsed,
-                        "has_first_person": has_first_person,
-                        "has_em_dash": has_em_dash,
-                        "compliance": " | ".join(compliance_notes),
-                        "sample": text[:90].replace("\n", " ") + "..."
-                    }
-                except asyncio.TimeoutError:
-                    return {"model": model_id, "success": False, "error": "Timeout (> 30s)", "latency": 30.0, "score": 0}
+                    return model_id, True, elapsed, "OK"
                 except Exception as ex:
-                    err_msg = str(ex).split("\n")[0][:80]
-                    if "429" in err_msg or "rate limit" in err_msg.lower():
-                        err_msg = "Rate Limit (429)"
-                    return {"model": model_id, "success": False, "error": err_msg, "latency": round(time.time() - t0, 2), "score": 0}
+                    elapsed = round(time.time() - t0, 2)
+                    err_msg = str(ex).split("\n")[0][:75]
+                    if "404" in err_msg:
+                        clean_err = "Modelo indisponível (404)"
+                    elif "403" in err_msg:
+                        clean_err = "Acesso negado / Incompatível (403)"
+                    elif "429" in err_msg or "rate limit" in err_msg.lower():
+                        clean_err = "Rate Limit ativo (429)"
+                    elif "timeout" in err_msg.lower() or elapsed >= 3.4:
+                        clean_err = "Timeout no Ping (> 3.5s)"
+                    else:
+                        clean_err = err_msg or "Erro upstream"
+                    return model_id, False, elapsed, clean_err
 
-        tasks = [_probe_single(m) for m in target_models]
-        results = await asyncio.gather(*tasks)
+        smoke_results = await asyncio.gather(*[_smoke_ping(m) for m in candidates_layer0])
 
-        approved = [r for r in results if r["success"] and r.get("score", 0) >= 40]
-        rejected = [r for r in results if not r["success"] or r.get("score", 0) < 40]
+        candidates_layer1 = []
+        pruned_layer1 = []
 
-        # Ranquear: Score mais alto primeiro, desempatando por latência mais rápida
+        for m_id, ok, elapsed, reason in smoke_results:
+            if ok:
+                candidates_layer1.append(m_id)
+            else:
+                pruned_layer1.append({
+                    "model": m_id,
+                    "success": False,
+                    "error": f"Camada 1: {reason}",
+                    "latency": elapsed,
+                    "score": 0
+                })
+
+        # --- CAMADA 2 & 3: Provas Operacionais E2E & Motor Avaliador Semântico ---
+        op_sem = asyncio.Semaphore(8)
+
+        json_prompt = (
+            "Retorne EXCLUSIVAMENTE um objeto JSON válido seguindo esta estrutura exata:\n"
+            "{\n"
+            '  "subject": "Astronomia Prática",\n'
+            '  "modules": [\n'
+            "    {\n"
+            '      "module_number": 1,\n'
+            '      "title": "O Céu Noturno",\n'
+            '      "lessons": [\n'
+            "        {\n"
+            '          "title": "O Farol Invisível",\n'
+            '          "core_concept": "Como telescópios capturam fótons ancestrais sob baixa luminosidade."\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "PROIBIDO usar as palavras 'string', 'placeholder', 'aula', ou deixar campos vazios."
+        )
+
+        writer_system = (
+            "Você é um professor catedrático da Trivium Academy. "
+            "Escreva uma mini-aula didática de introdução sobre 'A Inércia e o Movimento' para nível Iniciante.\n"
+            "REGRAS ESTRITAS DE COMPLIANCE:\n"
+            "1. PROIBIDO usar primeira pessoa do singular ('eu', 'percebi', 'acho')!\n"
+            "2. PROIBIDO usar o símbolo travessão ('—' ou '–')!\n"
+            "3. Desenvolva no mínimo 120 palavras explicando o princípio com um exemplo cotidiano.\n"
+            "4. Inclua um bloco '> Regra de Ouro: [princípio em 1 frase]'.\n"
+            "5. Responda em Markdown limpo."
+        )
+        writer_user = "Redija a mini-aula agora cumprindo rigorosamente as 4 regras sem desculpas nem metadiscurso."
+
+        async def _probe_operational(model_id: str):
+            async with op_sem:
+                t0 = time.time()
+
+                async def _run_json_probe():
+                    t_j0 = time.time()
+                    try:
+                        res_j = await asyncio.wait_for(
+                            litellm.acompletion(
+                                model=f"openrouter/{model_id}",
+                                api_key=api_key,
+                                messages=[{"role": "user", "content": json_prompt}],
+                                max_tokens=400,
+                                extra_headers=AGENTIC_HEADERS,
+                                extra_body={"reasoning": {"max_tokens": 80}}
+                            ),
+                            timeout=15.0
+                        )
+                        json_time = round(time.time() - t_j0, 2)
+                        choice_j = res_j.choices[0]
+                        content_j = getattr(choice_j.message, "content", None) or getattr(choice_j.message, "reasoning_content", None) or ""
+                        if not str(content_j).strip() and hasattr(choice_j, "provider_specific_fields") and isinstance(choice_j.provider_specific_fields, dict):
+                            content_j = choice_j.provider_specific_fields.get("reasoning", "")
+
+                        raw_j = str(content_j).strip()
+                        raw_j = re.sub(r'<think>.*?</think>', '', raw_j, flags=re.DOTALL).strip()
+                        if raw_j.startswith("```"):
+                            raw_j = re.sub(r'^```(?:json)?\s*', '', raw_j, flags=re.IGNORECASE)
+                            raw_j = re.sub(r'\s*```$', '', raw_j).strip()
+                        s_idx = raw_j.find("{")
+                        e_idx = raw_j.rfind("}")
+                        if s_idx != -1 and e_idx != -1:
+                            raw_j = raw_j[s_idx:e_idx+1]
+
+                        try:
+                            parsed = json.loads(raw_j)
+                        except Exception:
+                            rep = repair_json(raw_j)
+                            parsed = json.loads(rep) if isinstance(rep, str) else rep
+
+                        if isinstance(parsed, dict) and "modules" in parsed:
+                            mods = parsed.get("modules", [])
+                            if mods and len(mods) > 0:
+                                first_mod = mods[0]
+                                lessons = first_mod.get("lessons", [])
+                                if lessons and len(lessons) > 0:
+                                    l_title = str(lessons[0].get("title", "")).strip().lower()
+                                    l_concept = str(lessons[0].get("core_concept", "")).strip().lower()
+                                    if any(ph in l_title for ph in ["string", "placeholder", "aula"]) or not l_title:
+                                        return False, f"Placeholder detectado no título: '{l_title}'", json_time
+                                    elif any(ph in l_concept for ph in ["string", "placeholder"]) or not l_concept:
+                                        return False, "Placeholder no core_concept", json_time
+                                    else:
+                                        return True, "", json_time
+                                else:
+                                    return False, "Array lessons vazio", json_time
+                            else:
+                                return False, "Array modules vazio", json_time
+                        else:
+                            return False, "JSON ausente ou sem estrutura de módulos", json_time
+                    except Exception as ex_j:
+                        return False, str(ex_j).split("\n")[0][:60], round(time.time() - t_j0, 2)
+
+                async def _run_writer_probe():
+                    t_w0 = time.time()
+                    try:
+                        res_w = await asyncio.wait_for(
+                            litellm.acompletion(
+                                model=f"openrouter/{model_id}",
+                                api_key=api_key,
+                                messages=[
+                                    {"role": "system", "content": writer_system},
+                                    {"role": "user", "content": writer_user}
+                                ],
+                                max_tokens=600,
+                                extra_headers=AGENTIC_HEADERS,
+                                extra_body={"reasoning": {"max_tokens": 100}}
+                            ),
+                            timeout=18.0
+                        )
+                        writer_time = round(time.time() - t_w0, 2)
+                        choice_w = res_w.choices[0]
+                        content_w = getattr(choice_w.message, "content", None) or getattr(choice_w.message, "reasoning_content", None) or ""
+                        if not str(content_w).strip() and hasattr(choice_w, "provider_specific_fields") and isinstance(choice_w.provider_specific_fields, dict):
+                            content_w = choice_w.provider_specific_fields.get("reasoning", "")
+
+                        text_w = str(content_w).strip()
+                        text_w = re.sub(r'<think>.*?</think>', '', text_w, flags=re.DOTALL).strip()
+                        words = len(re.findall(r'\b\w+\b', text_w))
+                        has_first_person = bool(re.search(r'\b(eu|percebi|acho|minha opini[aã]o|acredito)\b', text_w, flags=re.IGNORECASE))
+                        has_em_dash = bool(re.search(r'[—–]', text_w))
+                        has_golden_rule = bool(re.search(r'Regra de Ouro', text_w, flags=re.IGNORECASE))
+                        sample_text = text_w[:90].replace("\n", " ") + "..."
+
+                        writer_ok = (words >= 100 and not has_first_person and not has_em_dash)
+                        reasons = []
+                        if words < 100: reasons.append(f"Apenas {words} palavras")
+                        if has_first_person: reasons.append("Usou 1ª pessoa")
+                        if has_em_dash: reasons.append("Usou travessão")
+                        writer_err = ", ".join(reasons)
+
+                        return {
+                            "ok": writer_ok,
+                            "words": words,
+                            "has_first_person": has_first_person,
+                            "has_em_dash": has_em_dash,
+                            "has_golden_rule": has_golden_rule,
+                            "time": writer_time,
+                            "sample": sample_text,
+                            "error": writer_err
+                        }
+                    except Exception as ex_w:
+                        return {
+                            "ok": False,
+                            "words": 0,
+                            "has_first_person": False,
+                            "has_em_dash": False,
+                            "has_golden_rule": False,
+                            "time": round(time.time() - t_w0, 2),
+                            "sample": "",
+                            "error": str(ex_w).split("\n")[0][:60]
+                        }
+
+                # Executa ambas as provas operacionais em paralelo para o mesmo modelo
+                (json_ok, json_err, json_time), w_res = await asyncio.gather(
+                    _run_json_probe(),
+                    _run_writer_probe()
+                )
+
+                words = w_res["words"]
+                writer_ok = w_res["ok"]
+                has_first_person = w_res["has_first_person"]
+                has_em_dash = w_res["has_em_dash"]
+                has_golden_rule = w_res["has_golden_rule"]
+                writer_time = w_res["time"]
+                sample_text = w_res["sample"]
+                writer_err = w_res["error"]
+
+                # Cálculo do Score Composto Trivium (0 a 100)
+                score = 0
+                if json_ok:
+                    score += 35
+                if words >= 120:
+                    score += 25
+                elif words >= 90:
+                    score += 15
+                elif words >= 40:
+                    score += 8
+
+                if not has_first_person:
+                    score += 10
+                if not has_em_dash:
+                    score += 10
+                if has_golden_rule:
+                    score += 10
+
+                avg_latency = round((json_time + writer_time) / 2, 2)
+                if avg_latency < 6.0:
+                    score += 10
+                elif avg_latency < 12.0:
+                    score += 5
+
+                compliance_notes = []
+                if json_ok:
+                    compliance_notes.append("JSON ✓")
+                else:
+                    compliance_notes.append("JSON Falhou")
+
+                if writer_ok:
+                    compliance_notes.append("Redação ✓")
+                elif words >= 90:
+                    compliance_notes.append("Denso")
+                else:
+                    compliance_notes.append("Curto")
+
+                if has_first_person: compliance_notes.append("1ª Pessoa")
+                if has_em_dash: compliance_notes.append("Travessão")
+
+                is_success = (score >= 70 and json_ok)
+                error_msg = ""
+                if not is_success:
+                    if not json_ok:
+                        error_msg = f"Falha no JSON: {json_err}"
+                    else:
+                        error_msg = f"Redação insuficiente: {writer_err or 'Score < 70'}"
+
+                return {
+                    "model": model_id,
+                    "success": is_success,
+                    "score": score,
+                    "words": words,
+                    "json_ready": json_ok,
+                    "latency": avg_latency,
+                    "has_first_person": has_first_person,
+                    "has_em_dash": has_em_dash,
+                    "compliance": " | ".join(compliance_notes),
+                    "sample": sample_text,
+                    "error": error_msg
+                }
+
+        op_results = await asyncio.gather(*[_probe_operational(m) for m in candidates_layer1])
+
+        approved = [r for r in op_results if r["success"]]
+        rejected_op = [r for r in op_results if not r["success"]]
+
+        # Ranquear aprovados: Score mais alto primeiro, desempatando por menor latência
         approved.sort(key=lambda x: (-x["score"], x["latency"]))
 
+        # Todos os rejeitados consolidados
+        all_rejected = pruned_layer0 + pruned_layer1 + rejected_op
+
         total_time = round(time.time() - t_start, 2)
-        # Monta a lista CSV dos melhores modelos para geração de cursos
         recommended_csv = ", ".join([a["model"] for a in approved])
 
+        # Auto-save imediato no settings.json se houver modelos aprovados
+        if approved:
+            try:
+                SettingsService.update_settings({"openrouter_models": recommended_csv})
+            except Exception as save_err:
+                print(f"[LLMGateway] Aviso ao persistir modelos homologados: {save_err}")
+
         return {
-            "total_scanned": len(free_models),
+            "total_scanned": total_scanned,
             "approved_count": len(approved),
-            "rejected_count": len(rejected),
+            "rejected_count": len(all_rejected),
             "benchmark_duration_seconds": total_time,
             "recommended_csv": recommended_csv,
             "approved_models": approved,
-            "rejected_models": rejected
+            "rejected_models": all_rejected
         }

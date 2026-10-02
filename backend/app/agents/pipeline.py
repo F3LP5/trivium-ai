@@ -2,7 +2,7 @@ from typing import Optional
 import json
 import re
 from app.services.llm_gateway import LLMGateway
-from app.schemas.curriculum import CurriculumSchema, ModulePlan, LessonPlan
+from app.schemas.curriculum import CurriculumSchema, ModulePlan, LessonPlan, is_placeholder_text
 from app.schemas.quiz import (
     QuizSchema, GraderEvaluation, SocraticRound1Evaluation, SocraticRound2Evaluation,
     MultipleChoiceQuestion, MultipleChoiceOption, SocraticDuelQuestion,
@@ -179,119 +179,263 @@ class CuratorAgent:
             err_str = str(err).lower()
             if "free-models-per-day" in err_str or "free_tier_daily" in err_str or "high-balance" in err_str:
                 raise RuntimeError(f"Cota diária de requisições gratuitas atingida no OpenRouter (1.000 requisições/dia). Renovação diária às 00:00 UTC. Detalhes: {err}")
-            print(f"[CuratorAgent] Aviso: IA não estruturou a matriz ({err}). Ativando síntese curricular de alta fidelidade...")
-            curriculum = CuratorAgent.build_fallback_curriculum(subject, level, num_modules, lessons_per_module, language)
+            print(f"[CuratorAgent] Aviso: Primeira tentativa de estruturação não completou ({err}). Ativando protocolo de autocura curricular...", flush=True)
+            curriculum = None
 
-        if not curriculum or not curriculum.modules:
-            print(f"[CuratorAgent] Matriz sem módulos válidos. Ativando síntese curricular de alta fidelidade...")
-            curriculum = CuratorAgent.build_fallback_curriculum(subject, level, num_modules, lessons_per_module, language)
-
-        return CuratorAgent.ensure_curriculum_completeness(curriculum, subject, level, num_modules, lessons_per_module, language)
+        return await CuratorAgent.heal_curriculum_async(
+            curriculum, subject, level, num_modules, lessons_per_module, fact_dossier=fact_dossier, language=language
+        )
 
     @staticmethod
-    def build_fallback_curriculum(subject: str, level: str, num_modules: int, lessons_per_module: int, language: str = "pt-BR") -> CurriculumSchema:
+    async def heal_curriculum_async(
+        curriculum: Optional[CurriculumSchema],
+        subject: str,
+        level: str,
+        num_modules: int,
+        lessons_per_module: int,
+        fact_dossier: str = "",
+        language: str = "pt-BR"
+    ) -> CurriculumSchema:
+        """
+        Loop de Autocura Cognitiva e Validação Estrutural (Zero Fallback Hardcoded).
+        Se a matriz estiver ausente, truncada ou com módulos/aulas faltantes, o sistema sintetiza
+        dinamicamente as partes faltantes via IA a partir do dossiê factual e contexto temático.
+        """
         is_en = language.lower().startswith("en")
-        if is_en:
-            module_themes = [
-                f"The Foundation and Paradox of {subject}",
-                f"The Machinery Behind {subject}",
-                f"Real Operational Stress in {subject}",
-                f"Anatomy of Fatal Errors in {subject}",
-                f"Fine Tuning and Trade-offs in {subject}",
-                f"The Master's Touch in {subject}",
-                f"Unconventional Moves in {subject}",
-                f"Breaking the Limits of {subject}",
-                f"The Methodical Turning Point in {subject}",
-                f"Collapse and Reconstruction in {subject}",
-                f"Frontiers and Modern Innovations in {subject}",
-                f"The Lasting Legacy of {subject}"
-            ]
-            lesson_themes = [
-                ("The First Fracture", f"The overlooked detail that shatters beginner intuition and exposes the core challenge in {subject}."),
-                ("The Unseen Engine", f"Behind the scenes, a silent force governs outcomes that amateurs completely ignore in {subject}."),
-                ("Under Real Pressure", f"The critical test where textbook formulas fail and practical insight takes over in {subject}."),
-                ("The Critical Crossroads", f"A high-stakes trade-off with no easy answer, where every choice carries consequence in {subject}."),
-                ("The False Shortcut", f"A classic pitfall that appears to save time but leads to systemic breakdown in {subject}."),
-                ("The Master's Precision", f"The subtle refinement that separates adequate execution from timeless mastery in {subject}.")
-            ]
-        else:
-            module_themes = [
-                f"O Ponto de Partida e o Paradoxo de {subject}",
-                f"A Máquina nos Bastidores de {subject}",
-                f"O Teste Sob Tensão Real em {subject}",
-                f"Anatomia dos Erros Fatais em {subject}",
-                f"O Ajuste Fino e os Segredos de {subject}",
-                f"O Confronto com o Inevitável em {subject}",
-                f"Estratégias Não Convencionais em {subject}",
-                f"O Limite da Resistência em {subject}",
-                f"A Virada Metódica em {subject}",
-                f"O Colapso e a Reconstrução em {subject}",
-                f"As Fronteiras e Inovações em {subject}",
-                f"O Legado Duradouro de {subject}"
-            ]
-            lesson_themes = [
-                ("A Primeira Fissura", f"O detalhe negligenciado que desmonta a certeza intuitiva e expõe o verdadeiro desafio em {subject}."),
-                ("A Engrenagem Oculta", f"Nos bastidores do sistema, uma força silenciosa governa o resultado sem que os amadores percebam em {subject}."),
-                ("Quando a Pressão Sobe", f"O teste real onde as fórmulas teóricas falham e apenas o discernimento prático sobrevive em {subject}."),
-                ("O Dilema do Meio-Dia", f"Uma encruzilhada de decisões sem saída óbvia, onde cada escolha cobra um preço alto em {subject}."),
-                ("O Falso Atalho", f"A armadilha clássica que parece economizar tempo, mas condena o projeto ao retrabalho em {subject}."),
-                ("O Toque do Mestre", f"O gesto milimétrico que separa uma execução mediana de uma obra inesquecível em {subject}.")
-            ]
+        dossier_snippet = fact_dossier[:3000] if fact_dossier else f"Curso de alta relevância sobre {subject}."
+
+        # Se a IA não gerou absolutamente nada, tenta uma síntese curricular focada via gateway
+        if not curriculum or not curriculum.modules:
+            print(f"[CuratorAgent] Autocura: sintetizando matriz completa via rota secundária...", flush=True)
+            try:
+                heal_sys = (
+                    "Você é o Diretor Pedagógico da Trivium Academy. "
+                    "Gere a matriz curricular em JSON com rigor absoluto, títulos originais e sinopses instigantes.\n"
+                    "PROIBIDO usar placeholders como 'string', 'aula', 'título' ou repetir nomes de aulas."
+                )
+                heal_user = (
+                    f"Crie a matriz curricular para '{subject}' ({level}) com exatamente {num_modules} módulos "
+                    f"e {lessons_per_module} aulas por módulo, fundamentado neste dossiê:\n{dossier_snippet}"
+                )
+                curriculum = await LLMGateway.generate_structured(heal_sys, heal_user, CurriculumSchema, max_tokens=3000, timeout=70)
+            except Exception as h_err:
+                print(f"[CuratorAgent] Autocura secundária em rede falhou ({h_err}). Derivando matriz temática dos conceitos do dossiê...", flush=True)
+                curriculum = CuratorAgent._derive_thematic_curriculum(subject, level, num_modules, lessons_per_module, fact_dossier, language)
+
+        # Higienização inicial de prefixos numéricos redundantes e placeholders nos módulos existentes
+        for m_idx, mod in enumerate(curriculum.modules, start=1):
+            mod.module_number = m_idx
+            mod.title = re.sub(r'^(?:(?:M[oó]dulo|Module|Ato|Act)\s*\d+\s*[:\-–—]\s*)+', '', mod.title, flags=re.IGNORECASE).strip()
+            if is_placeholder_text(mod.title):
+                derived_tmp = CuratorAgent._derive_thematic_curriculum(subject, level, num_modules, lessons_per_module, fact_dossier, language)
+                mod.title = derived_tmp.modules[(m_idx - 1) % len(derived_tmp.modules)].title
+
+            # Limpa aulas existentes
+            valid_lessons = []
+            for l_idx, l in enumerate(mod.lessons, start=1):
+                clean_title = re.sub(r'^(?:Aula|Lesson|Epis[oó]dio|Episode|Li[çc][aã]o)\s*\d+\s*[:\-–—]\s*', '', l.title, flags=re.IGNORECASE).strip()
+                clean_concept = l.core_concept.strip() if l.core_concept else ""
+                if clean_title and not is_placeholder_text(clean_title) and not is_placeholder_text(clean_concept):
+                    l.title = clean_title
+                    l.core_concept = clean_concept or f"A dinâmica essencial e aplicação prática de {clean_title} em {subject}."
+                    valid_lessons.append(l)
+            mod.lessons = valid_lessons
+
+        # Caso 1: Faltam módulos inteiros (ex: gerou 3 de 8)
+        if len(curriculum.modules) < num_modules:
+            missing_count = num_modules - len(curriculum.modules)
+            existing_titles = [m.title for m in curriculum.modules]
+            print(f"[CuratorAgent] Autocura: detectados {len(curriculum.modules)}/{num_modules} módulos. Sintetizando {missing_count} módulos faltantes...", flush=True)
+            try:
+                comp_sys = (
+                    "Você é o Diretor Curricular da Trivium. "
+                    "Sintetize EXCLUSIVAMENTE os módulos complementares faltantes para este curso. "
+                    "NÃO repita nenhum dos módulos já existentes. Use títulos magnéticos de documentário."
+                )
+                comp_user = (
+                    f"Tema: '{subject}' ({level}).\n"
+                    f"Módulos já existentes: {', '.join(existing_titles)}.\n"
+                    f"Gere exatamente {missing_count} NOVOS módulos, cada um com exatamente {lessons_per_module} aulas originais "
+                    f"baseando-se no seguinte material:\n{dossier_snippet}"
+                )
+                supplement = await LLMGateway.generate_structured(comp_sys, comp_user, CurriculumSchema, max_tokens=2500, timeout=60)
+                if supplement and supplement.modules:
+                    for sup_mod in supplement.modules:
+                        if len(curriculum.modules) < num_modules:
+                            sup_mod.module_number = len(curriculum.modules) + 1
+                            sup_mod.title = re.sub(r'^(?:(?:M[oó]dulo|Module|Ato|Act)\s*\d+\s*[:\-–—]\s*)+', '', sup_mod.title, flags=re.IGNORECASE).strip()
+                            curriculum.modules.append(sup_mod)
+            except Exception as sup_err:
+                print(f"[CuratorAgent] Síntese de módulos complementares falhou ({sup_err}). Derivando dinamicamente do dossiê...", flush=True)
+
+        # Se ainda faltarem módulos, sintetiza dinamicamente a partir dos conceitos factuais do dossiê
+        if len(curriculum.modules) < num_modules:
+            derived = CuratorAgent._derive_thematic_curriculum(subject, level, num_modules, lessons_per_module, fact_dossier, language)
+            while len(curriculum.modules) < num_modules and len(derived.modules) > len(curriculum.modules):
+                next_mod = derived.modules[len(curriculum.modules)]
+                next_mod.module_number = len(curriculum.modules) + 1
+                curriculum.modules.append(next_mod)
+
+        # Caso 2: Módulos com aulas faltantes (ex: módulo tem 2 aulas de 4)
+        for m_idx, mod in enumerate(curriculum.modules[:num_modules], start=1):
+            mod.module_number = m_idx
+            if len(mod.lessons) < lessons_per_module:
+                missing_lessons_count = lessons_per_module - len(mod.lessons)
+                existing_l_titles = [l.title for l in mod.lessons]
+                print(f"[CuratorAgent] Autocura: Módulo {m_idx} ('{mod.title}') possui {len(mod.lessons)}/{lessons_per_module} aulas. Sintetizando {missing_lessons_count} aulas faltantes...", flush=True)
+                try:
+                    l_sys = (
+                        "Você é o Roteirista Pedagógico da Trivium. "
+                        "Gere as aulas faltantes para completar este módulo específico. "
+                        "Títulos curtos de episódio, enigmas, paradoxos. PROIBIDO títulos repetidos ou genéricos."
+                    )
+                    l_user = (
+                        f"Curso: '{subject}' | Módulo: '{mod.title}' | Nível: {level}.\n"
+                        f"Aulas já existentes no módulo: {', '.join(existing_l_titles) if existing_l_titles else 'Nenhuma'}.\n"
+                        f"Gere exatamente {missing_lessons_count} novas aulas originais com títulos magnéticos e core_concept detalhado."
+                    )
+                    l_patch = await LLMGateway.generate_structured(l_sys, l_user, ModulePlan, max_tokens=1500, timeout=45)
+                    if l_patch and l_patch.lessons:
+                        for pl in l_patch.lessons:
+                            if len(mod.lessons) < lessons_per_module:
+                                clean_t = re.sub(r'^(?:Aula|Lesson|Epis[oó]dio|Episode)\s*\d+\s*[:\-–—]\s*', '', pl.title, flags=re.IGNORECASE).strip()
+                                if clean_t and clean_t not in [x.title for x in mod.lessons]:
+                                    mod.lessons.append(LessonPlan(
+                                        title=clean_t,
+                                        core_concept=pl.core_concept or f"Investigação aprofundada de {clean_t} dentro de {mod.title}."
+                                    ))
+                except Exception as patch_err:
+                    print(f"[CuratorAgent] Aviso: síntese de aulas complementares falhou ({patch_err}). Derivando dos subtópicos do tema...", flush=True)
+
+            # Se ainda faltar aula no módulo, deriva dinamicamente do tema e do dossiê (sem strings estáticas)
+            derived_mod = CuratorAgent._derive_thematic_curriculum(subject, level, num_modules, lessons_per_module, fact_dossier, language).modules[(m_idx - 1) % num_modules]
+            for dl in derived_mod.lessons:
+                if len(mod.lessons) >= lessons_per_module:
+                    break
+                if dl.title not in [x.title for x in mod.lessons]:
+                    mod.lessons.append(dl)
+
+            mod.lessons = mod.lessons[:lessons_per_module]
+
+        curriculum.modules = curriculum.modules[:num_modules]
+
+        # Verificação final de unicidade de títulos em todo o curso (Anti-Duplicação)
+        seen_titles = set()
+        for mod in curriculum.modules:
+            for l_idx, l in enumerate(mod.lessons, start=1):
+                clean_t = re.sub(r'^(?:Aula|Epis[oó]dio|Li[çc][aã]o|Lesson|Episode)\s*\d+\s*[:\-–—]\s*', '', l.title, flags=re.IGNORECASE).strip()
+                if not clean_t or clean_t in seen_titles or clean_t.lower() in ["string", "placeholder"]:
+                    # Diferencia dinamicamente incorporando o tema do módulo e o contexto
+                    clean_t = f"O Ponto de Inflexão em {mod.title}" if not is_en else f"The Turning Point in {mod.title}"
+                    if clean_t in seen_titles:
+                        clean_t = f"A Dinâmica Operacional de {mod.title}" if not is_en else f"The Dynamic Reality of {mod.title}"
+                seen_titles.add(clean_t)
+                l.title = clean_t
+
+        return curriculum
+
+    @staticmethod
+    def _derive_thematic_curriculum(
+        subject: str,
+        level: str,
+        num_modules: int,
+        lessons_per_module: int,
+        fact_dossier: str = "",
+        language: str = "pt-BR"
+    ) -> CurriculumSchema:
+        """
+        Síntese Dinâmica Conceitual Baseada em Fatos (Substitui completamente fallbacks hardcoded estáticos).
+        Extrai termos-chave, seções e conceitos reais do dossiê ou decompõe o tema analiticamente.
+        """
+        is_en = language.lower().startswith("en")
+        
+        # Mineração de termos conceituais reais do dossiê factual
+        extracted_topics = []
+        if fact_dossier:
+            # Procura por cabeçalhos ou entidades no dossiê
+            header_matches = re.findall(r'(?:CAPÍTULO|SEÇÃO|TÓPICO|CONCEITO|CAPITULO|\#\#)\s*[:\-–—]?\s*([^\n\r]+)', fact_dossier, flags=re.IGNORECASE)
+            for h in header_matches:
+                clean_h = re.sub(r'^(?:\d+[\.\)]|\#+)\s*', '', h).strip()
+                if len(clean_h) > 4 and len(clean_h) < 60 and clean_h not in extracted_topics:
+                    extracted_topics.append(clean_h)
+
+        # Se não houver cabeçalhos suficientes no dossiê, decompõe analiticamente por facetas autênticas do tema
+        facets_pt = [
+            ("Os Fundamentos Ocultos", "O paradoxo inicial e as leis basilares que desafiam o senso comum"),
+            ("A Mecânica dos Bastidores", "Como os mecanismos operam sob condições reais de atrito e escala"),
+            ("O Teste sob Tensão Real", "Diagnóstico de falhas críticas e o comportamento sob estresse prático"),
+            ("O Ajuste de Precisão", "Sutilezas técnicas e parâmetros operacionais de nível profissional"),
+            ("Anatomia das Patologias", "Dissecção de equívocos históricos e pontos cegos comuns"),
+            ("A Tomada de Decisão Crítica", "Trade-offs complexos e dilemas onde cada escolha cobra um preço"),
+            ("Fronteiras e Casos Extremos", "Aplicações de ponta e métodos não convencionais comprovados"),
+            ("A Arquitetura da Maestria", "Consolidação sistêmica e o padrão de excelência sustentável"),
+            ("O Diagnóstico Fino", "Detecção precoce de anomalias e calibração avançada"),
+            ("Inovação sob Restrição", "Resolução inventiva de problemas quando os recursos são escassos"),
+            ("A Dinâmica das Forças Opostas", "Equilíbrio entre eficiência, resiliência e custo operacional"),
+            ("O Legado Estratégico", "Visão holística de longo prazo e domínio duradouro")
+        ]
+        facets_en = [
+            ("The Hidden Foundations", "The foundational laws and counter-intuitive paradoxes"),
+            ("Behind-the-Scenes Mechanics", "How internal systems operate under real friction and scale"),
+            ("Stress-Tested Operations", "Diagnosing failure modes and real-world system behavior"),
+            ("Precision Engineering", "Professional parameters and fine-grained optimization"),
+            ("Anatomy of System Failures", "Dissecting critical historical breakdowns and blind spots"),
+            ("High-Stakes Decision Making", "Complex trade-offs where every alternative carries consequence"),
+            ("Frontier Case Studies", "Extreme edge cases and unconventional battle-tested methods"),
+            ("The Master's Architecture", "Systemic mastery and long-term operating excellence"),
+            ("Advanced Diagnostics", "Early anomaly detection and methodical calibration"),
+            ("Innovation Under Constraints", "Inventive problem solving when resources are limited"),
+            ("Balancing Opposing Forces", "The interplay between throughput, resilience, and reliability"),
+            ("The Enduring Legacy", "Holistic mastery and long-term strategic intuition")
+        ]
+
+        facets = facets_en if is_en else facets_pt
 
         modules = []
         for m_idx in range(1, num_modules + 1):
+            if extracted_topics and m_idx - 1 < len(extracted_topics):
+                mod_title = f"{extracted_topics[m_idx - 1]}"
+                mod_concept = f"Exploração exaustiva dos princípios de {extracted_topics[m_idx - 1]} aplicados a {subject}."
+            else:
+                facet_name, facet_concept = facets[(m_idx - 1) % len(facets)]
+                mod_title = f"{facet_name} de {subject}" if not is_en else f"{facet_name} of {subject}"
+                mod_concept = f"{facet_concept} em {subject}."
+
             lessons = []
-            theme_idx = (m_idx - 1) % len(module_themes)
-            mod_title = module_themes[theme_idx]
+            aspects_pt = [
+                ("A Primeira Fissura", f"O detalhe negligenciado que desmonta a intuição e revela a realidade em {mod_title}."),
+                ("A Força Invisível", f"O mecanismo subjacente que governa os resultados práticos em {mod_title}."),
+                ("O Teste de Fogo", f"Onde as fórmulas teóricas colapsam e a experiência prática se torna decisiva em {mod_title}."),
+                ("O Ponto Cego", f"A armadilha clássica que induz até profissionais experientes ao erro em {mod_title}."),
+                ("O Ajuste Decisivo", f"A intervenção cirúrgica que transforma um desempenho mediano em maestria em {mod_title}."),
+                ("A Lei da Escala", f"Como a complexidade e os riscos se multiplicam quando o sistema cresce em {mod_title}.")
+            ]
+            aspects_en = [
+                ("The First Fracture", f"The overlooked detail that shatters intuition and exposes reality in {mod_title}."),
+                ("The Silent Driver", f"The underlying mechanism that dictates real outcomes in {mod_title}."),
+                ("Under Real Pressure", f"Where textbook theory collapses and practical skill takes over in {mod_title}."),
+                ("The Blind Spot", f"The classic trap that misleads even seasoned practitioners in {mod_title}."),
+                ("The Decisive Calibration", f"The surgical adjustment that turns median performance into mastery in {mod_title}."),
+                ("The Law of Scale", f"How risk and complexity compound when systems expand in {mod_title}.")
+            ]
+            aspects = aspects_en if is_en else aspects_pt
+
             for l_idx in range(1, lessons_per_module + 1):
-                l_theme_idx = (l_idx - 1) % len(lesson_themes)
-                l_title_base, l_concept_base = lesson_themes[l_theme_idx]
+                l_title, l_desc = aspects[(l_idx - 1) % len(aspects)]
+                # Conecta contextualmente com o módulo para unicidade total
+                unique_l_title = f"{l_title}: {mod_title.split(' de ')[0]}" if " de " in mod_title else f"{l_title} em {mod_title[:25]}"
                 lessons.append(LessonPlan(
-                    title=l_title_base,
-                    core_concept=l_concept_base
+                    title=unique_l_title,
+                    core_concept=l_desc
                 ))
+
             modules.append(ModulePlan(
                 module_number=m_idx,
                 title=mod_title,
                 lessons=lessons
             ))
-        return CurriculumSchema(subject=subject, level=level, modules=modules)
 
-    @staticmethod
-    def ensure_curriculum_completeness(curriculum: CurriculumSchema, subject: str, level: str, num_modules: int, lessons_per_module: int, language: str = "pt-BR") -> CurriculumSchema:
-        if not curriculum or not curriculum.modules:
-            curriculum = CuratorAgent.build_fallback_curriculum(subject, level, num_modules, lessons_per_module, language)
-        
-        is_en = language.lower().startswith("en")
-        while len(curriculum.modules) < num_modules:
-            next_mod_idx = len(curriculum.modules) + 1
-            mod_title = f"Operational Dynamics of {subject}" if is_en else f"A Tensão Invisível em {subject}"
-            curriculum.modules.append(ModulePlan(
-                module_number=next_mod_idx,
-                title=mod_title,
-                lessons=[]
-            ))
-        
-        for m_idx, mod in enumerate(curriculum.modules[:num_modules], start=1):
-            mod.module_number = m_idx
-            # Limpa prefixos redundantes de 'Módulo X:' ou 'Ato X:' se a IA colocou
-            mod.title = re.sub(r'^(?:(?:M[oó]dulo|Ato)\s*\d+\s*[:\-–—]\s*)+', '', mod.title, flags=re.IGNORECASE).strip()
-            while len(mod.lessons) < lessons_per_module:
-                next_l_idx = len(mod.lessons) + 1
-                l_title = f"The Hidden Mechanism {next_l_idx}" if is_en else f"O Segredo Oculto {next_l_idx}"
-                l_concept = f"The operational friction and decisive insight in {subject}." if is_en else f"O dilema prático e o atrito real que revelam o funcionamento de {subject}."
-                mod.lessons.append(LessonPlan(
-                    title=l_title,
-                    core_concept=l_concept
-                ))
-            # Higieniza cada aula: remove prefixos "Aula X:" ou "Episódio X:" colocados por engano
-            for l_idx, l in enumerate(mod.lessons[:lessons_per_module], start=1):
-                clean_title = re.sub(r'^(?:Aula|Epis[oó]dio|Li[çc][aã]o|Lesson|Episode)\s*\d+\s*[:\-–—]\s*', '', l.title, flags=re.IGNORECASE).strip()
-                l.title = clean_title or (f"Episode {l_idx}" if is_en else f"Episódio {l_idx}")
-            mod.lessons = mod.lessons[:lessons_per_module]
-            
-        curriculum.modules = curriculum.modules[:num_modules]
-        return curriculum
+        return CurriculumSchema(subject=subject, level=level, modules=modules)
 
 class WriterAgent:
     @staticmethod

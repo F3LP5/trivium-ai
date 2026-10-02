@@ -1,5 +1,22 @@
-from pydantic import BaseModel, Field, model_validator
+import re
 from typing import List, Optional, Any
+from pydantic import BaseModel, Field, model_validator
+
+PLACEHOLDER_WORDS = {
+    "string", "placeholder", "none", "null", "undefined", "título", "titulo", "title",
+    "theme name", "magnetic title", "hook synopsis", "título magnético", "titulo magnetico",
+    "nome do modulo", "nome do módulo", "nome do tema"
+}
+
+def is_placeholder_text(text: Optional[str]) -> bool:
+    if not text:
+        return True
+    s = text.strip().lower()
+    if s in PLACEHOLDER_WORDS:
+        return True
+    if re.match(r'^(?:string|placeholder|aula|episode|lesson|m[oó]dulo|theme name|magnetic title)\s*\d*$', s):
+        return True
+    return False
 
 class LessonPlan(BaseModel):
     title: str = Field(default="Aula", description="Titulo direto e atrativo da aula")
@@ -9,10 +26,19 @@ class LessonPlan(BaseModel):
     @classmethod
     def parse_lesson(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            # Normaliza campos alternativos
-            title = data.get("title") or data.get("name") or data.get("topic") or "Aula"
-            concept = data.get("core_concept") or data.get("concept") or data.get("description") or data.get("objective") or title
-            return {"title": str(title), "core_concept": str(concept)}
+            # Normaliza campos alternativos e em português
+            title = data.get("title") or data.get("titulo") or data.get("título") or data.get("name") or data.get("topic")
+            concept = data.get("core_concept") or data.get("sinopse") or data.get("concept") or data.get("description") or data.get("objective") or title
+            
+            clean_title = str(title).strip() if title is not None else ""
+            clean_concept = str(concept).strip() if concept is not None else ""
+
+            if is_placeholder_text(clean_title):
+                raise ValueError(f"Título de aula inválido ou placeholder detectado: '{clean_title}'")
+            if is_placeholder_text(clean_concept):
+                raise ValueError(f"Conceito central de aula inválido ou placeholder detectado: '{clean_concept}'")
+
+            return {"title": clean_title, "core_concept": clean_concept}
         return data
 
 class ModulePlan(BaseModel):
@@ -25,9 +51,12 @@ class ModulePlan(BaseModel):
     def parse_module(cls, data: Any) -> Any:
         if isinstance(data, dict):
             num = data.get("module_number") or data.get("id") or data.get("number") or 1
-            title = data.get("title") or data.get("name") or f"Modulo {num}"
-            raw_lessons = data.get("lessons") or data.get("topics") or []
-            return {"module_number": int(num), "title": str(title), "lessons": raw_lessons}
+            title = data.get("title") or data.get("titulo") or data.get("name") or data.get("modulo") or "Modulo"
+            clean_title = str(title).strip() if title is not None else "Modulo"
+            if clean_title != "Modulo" and is_placeholder_text(clean_title):
+                raise ValueError(f"Título de módulo inválido ou placeholder detectado: '{clean_title}'")
+            raw_lessons = data.get("lessons") or data.get("aulas") or data.get("topics") or []
+            return {"module_number": int(num), "title": clean_title, "lessons": raw_lessons}
         return data
 
 class CurriculumSchema(BaseModel):

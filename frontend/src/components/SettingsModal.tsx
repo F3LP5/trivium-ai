@@ -364,9 +364,17 @@ export default function SettingsModal({ isOpen, onClose, lang }: SettingsModalPr
     }
   };
 
-  const handleApplyRecommended = () => {
+  const handleApplyRecommended = async () => {
     if (benchmarkResult?.recommended_csv) {
       setOpenrouterModels(benchmarkResult.recommended_csv);
+      try {
+        const updated = await updateSettings({ openrouter_models: benchmarkResult.recommended_csv });
+        setSettings(updated);
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2500);
+      } catch (err: unknown) {
+        console.error("Falha ao salvar modelos recomendados automaticamente:", err);
+      }
     }
   };
 
