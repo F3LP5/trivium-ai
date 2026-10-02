@@ -221,11 +221,13 @@ class CourseOrchestrator:
 
             all_lesson_items = module_items
 
-            # Semáforo de controle de taxa/concorrência adaptativa (VRAM Shield para modelos locais vs Nuvem)
+            # Controle de taxa e concorrência adaptativa com proteção anti-429 e calibração por nível
             from app.services.settings_service import SettingsService
+            from app.services.concurrency_limiter import AdaptiveConcurrencyLimiter
+            from app.services.document_extractor import sanitize_extracted_text
+
             active_provider = SettingsService.get_settings().get("llm_provider", "openrouter").lower()
-            max_concurrent_lessons = 1 if active_provider in ["local", "ollama"] else 2
-            sem = asyncio.Semaphore(max_concurrent_lessons)
+            limiter = AdaptiveConcurrencyLimiter(provider=active_provider, level=level)
             progress_lock = asyncio.Lock()
 
             # Coleta de tarefas de imagens para sincronização
@@ -234,7 +236,8 @@ class CourseOrchestrator:
             async def generate_single_lesson(item):
                 nonlocal completed_count
                 mod_num, mod_title, l_id, l_num, l_title, l_concept = item
-                async with sem:
+                await limiter.acquire()
+                try:
                     # Se for curso de documento/livro, injeta a seção e texto autêntico do capítulo correspondente
                     lesson_specific_dossier = course_dossier
                     if source_type == "document" and chapter_chunks:
@@ -242,7 +245,8 @@ class CourseOrchestrator:
                         total_target_lessons = max(1, total_lessons)
                         ch_idx = min(int(lesson_global_idx * len(chapter_chunks) / total_target_lessons), len(chapter_chunks) - 1)
                         target_ch = chapter_chunks[ch_idx]
-                        ch_text = target_ch.get("text_content", "")[:12000]
+                        raw_text = target_ch.get("text_content", "")
+                        ch_text = sanitize_extracted_text(raw_text)[:6000]
                         lesson_specific_dossier = (
                             f"LIVRO-FONTE: {book_filename or subject}\n"
                             f"CAPÍTULO / SEÇÃO DO LIVRO: {target_ch.get('title', f'Capítulo {ch_idx+1}')}\n"
@@ -279,6 +283,8 @@ class CourseOrchestrator:
                             )
                         except Exception as write_err:
                             err_str = str(write_err).lower()
+                            if "429" in err_str or "rate limit" in err_str or "free-models-per-min" in err_str:
+                                await limiter.on_rate_limit(backoff_secs=3.5)
                             if "free-models-per-day" in err_str or "free_tier_daily" in err_str or "high-balance" in err_str:
                                 quota_msg = "Cota diária de modelos gratuitos atingida no OpenRouter (1.000 requisições/dia). O limite é renovado às 00:00 UTC."
                                 print(f"[Orchestrator] {quota_msg}")
@@ -383,6 +389,10 @@ class CourseOrchestrator:
 
                         pct = 15 + int((completed_count / total_lessons) * 80)
                         update_job(pct, f"Progresso: {completed_count}/{total_lessons} aulas concluídas (Módulo {mod_num} - '{l_title}')...")
+
+                    await limiter.on_success()
+                finally:
+                    await limiter.release()
 
             tasks = [generate_single_lesson(item) for item in all_lesson_items]
             await asyncio.gather(*tasks)

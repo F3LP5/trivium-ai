@@ -244,4 +244,25 @@ def build_chapter_chunks(extracted_data: Dict[str, Any], file_format: str) -> Li
                     idx += 1
                 current_start = current_end + 1
 
+    # Higienização de Front-Matter e Pós-processamento de Chunks:
+    # Descarta seções puramente editoriais (< 350 palavras) que contenham termos como créditos, copyright, sumário, etc.
+    front_matter_pattern = re.compile(
+        r'\b(créditos|creditos|copyright|ficha catalográfica|ficha catalografica|'
+        r'dedicatória|dedicatoria|sumário|sumario|índice|indice|agradecimentos|'
+        r'epígrafe|epigrafe|sobre o autor|nota do editor|nota da edição|folha de rosto)\b',
+        re.IGNORECASE
+    )
+
+    filtered_chunks = []
+    for ch in chunks:
+        is_front_matter = bool(front_matter_pattern.search(ch.title))
+        if is_front_matter and ch.word_count < 350:
+            continue
+        filtered_chunks.append(ch)
+
+    if len(filtered_chunks) >= 2:
+        for new_idx, ch in enumerate(filtered_chunks, 1):
+            ch.chapter_index = new_idx
+        chunks = filtered_chunks
+
     return chunks

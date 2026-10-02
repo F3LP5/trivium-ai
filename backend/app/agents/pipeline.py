@@ -515,7 +515,7 @@ class WriterAgent:
         elif fact_dossier:
             ledger_block = (
                 f"\n\n11. RIGOR FACTUAL E FONTES VERIFICADAS:\n"
-                f"{fact_dossier[:3000]}\n"
+                f"{fact_dossier[:6500]}\n"
             )
 
         # Regra de Bibliografia por Aula: prioriza livros canônicos do Archive.org e artigos auditados
@@ -715,9 +715,8 @@ class WriterAgent:
                 f"- Finalize com '## Glossário da Aula' e '## Fontes e Leituras Recomendadas da Aula'.\n\n"
 
                 f"LEMBRE-SE: PROIBIÇÃO ABSOLUTA DA PRIMEIRA PESSOA ('EU', 'PERCEBI', ETC.), DO SÍMBOLO '—' (travessão), DE EMOJIS NOS TÍTULOS E DE ADJETIVAÇÃO VAZIA SEM DADOS. PRECISÃO LEXICAL ACIMA DE EFEITO POÉTICO: NUNCA USE UMA PALAVRA CUJO SIGNIFICADO EXATO NÃO SEJA CERTO; PREFIRA SEMPRE A ALTERNATIVA MAIS SIMPLES E CORRETA."
-            )
-
-        raw_text = await LLMGateway.generate_text(system_prompt, user_prompt, max_tokens=3800, timeout=60)
+        lesson_token_budget = min(2400, max(1400, int(target_words * 2.2)))
+        raw_text = await LLMGateway.generate_text(system_prompt, user_prompt, max_tokens=lesson_token_budget, timeout=40)
         # Sanitização e normalização de cabeçalhos markdown
         cleaned_text = re.sub(r'^[ \t]*(#{1,6})(?:\s*#+)+\s*', r'\1 ', raw_text, flags=re.MULTILINE)
         cleaned_text = re.sub(r'^\s*\[(?:Hook|Note|Intuition|Case)[^\]]*\]\s*\n+', '', cleaned_text, flags=re.IGNORECASE | re.MULTILINE)
@@ -815,7 +814,7 @@ class WriterAgent:
                 )
 
             try:
-                expanded_text = await LLMGateway.generate_text(revisor_system, revisor_user, max_tokens=3800, timeout=60)
+                expanded_text = await LLMGateway.generate_text(revisor_system, revisor_user, max_tokens=lesson_token_budget, timeout=40)
                 if expanded_text and len(re.findall(r'\b\w+\b', expanded_text)) > word_count:
                     # Aplica a mesma sanitização determinística no texto expandido
                     cleaned_text = re.sub(r'^[ \t]*(#{1,6})(?:\s*#+)+\s*', r'\1 ', expanded_text, flags=re.MULTILINE)
