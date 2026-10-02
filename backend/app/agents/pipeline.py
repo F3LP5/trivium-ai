@@ -2,6 +2,7 @@ from typing import Optional
 import json
 import re
 from app.services.llm_gateway import LLMGateway
+from app.services.lexical_linter import LexicalLinterService
 from app.schemas.curriculum import CurriculumSchema, ModulePlan, LessonPlan, is_placeholder_text
 from app.schemas.quiz import (
     QuizSchema, GraderEvaluation, SocraticRound1Evaluation, SocraticRound2Evaluation,
@@ -830,6 +831,17 @@ class WriterAgent:
         cleaned_text = re.sub(r'\[([^\]]+)\]\((https?):\s*\/\/\s*([^\)]+)\)', r'[\1](\2://\3)', cleaned_text)
         cleaned_text = re.sub(r'-\s*\*\*\[([^\]]+)\]\((https?[^\)]+)\)\*\*', r'- [\1](\2)', cleaned_text)
         cleaned_text = re.sub(r'-\s*\[([^\]]+)\]\((https?[^\)]+)\)\s*\*\*', r'- [\1](\2)', cleaned_text)
+
+        # Linter Léxico Editorial Híbrido (somente após a aula ser gerada, para PT-BR e EN)
+        try:
+            cleaned_text = await LexicalLinterService.lint_and_fix(
+                cleaned_text,
+                language=language,
+                lesson_title=lesson_title,
+                core_concept=core_concept
+            )
+        except Exception as err:
+            print(f"[WriterAgent] Aviso: Linter léxico ignorado por falha não bloqueante: {err}")
 
         return cleaned_text
 
