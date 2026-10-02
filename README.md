@@ -160,35 +160,36 @@ Trivium uses an automated multi-agent pipeline to research, write, and verify ea
 
 ```mermaid
 flowchart TD
-    User([User Prompt / Book Upload]):-- Topic, Level, Language --> Gateway[FastAPI Gateway]
-    Gateway -- Job Ticket --> Orch[CourseOrchestrator]
+    User(["User Prompt / Book Upload"]) -->|Topic, Level, Language| Gateway["FastAPI Gateway"]
+    Gateway -->|Job Ticket| Orch["CourseOrchestrator"]
     
     subgraph Research & Extraction
-        Orch --> SubQ[Sub-query Search]
-        SubQ --> DDG[DuckDuckGo]
-        SubQ --> Wiki[Wikipedia API]
-        DDG & Wiki --> Traf[Trafilatura Text Extractor]
-        Traf --> Dossier[Factual Research Dossier]
-        DocExtract[PDF / EPUB Extractor] --> CogAn[Document Analyzer] --> Dossier
+        Orch --> SubQ["Sub-query Search"]
+        SubQ --> DDG["DuckDuckGo"]
+        SubQ --> Wiki["Wikipedia API"]
+        DDG --> Traf["Trafilatura Text Extractor"]
+        Wiki --> Traf
+        Traf --> Dossier["Factual Research Dossier"]
+        DocExtract["PDF / EPUB Extractor"] --> CogAn["Document Analyzer"] --> Dossier
     end
 
     subgraph Course Generation
-        Dossier --> Curator[Curator Agent: Course Outline & Syllabus]
-        Curator --> Loop[Lesson Generation Loop]
-        Loop --> Writer[Writer Agent: Lesson Drafts]
-        Writer --> Stipple[Stipple Service: Optional Concept Illustrations]
-        Stipple --> Quiz[QuizMaster Agent: MCQs + Scenario + Socratic Prompts]
-        Quiz --> Sum[Summarizer Agent: Key Takeaways]
-        Sum --> DB[(SQLite Database)]
+        Dossier --> Curator["Curator Agent: Course Outline & Syllabus"]
+        Curator --> Loop["Lesson Generation Loop"]
+        Loop --> Writer["Writer Agent: Lesson Drafts"]
+        Writer --> Stipple["Stipple Service: Optional Concept Illustrations"]
+        Stipple --> Quiz["QuizMaster Agent: MCQs + Scenario + Socratic Prompts"]
+        Quiz --> Sum["Summarizer Agent: Key Takeaways"]
+        Sum --> DB[("SQLite Database")]
     end
 
     subgraph Student Interface
-        DB --> ReadUI[Course Reader]
-        ReadUI --> Tutor[In-Lesson Sidebar AI Tutor]
-        ReadUI --> SandboxUI[Interactive Decision Sandbox]
-        ReadUI --> Grader[Grader Agent: Evaluates Socratic Answers]
-        Grader -- Pass --> Unlock[Unlock Next Lesson]
-        ReadUI --> PDFEngine[Playwright: Export A4 PDF Booklet]
+        DB --> ReadUI["Course Reader"]
+        ReadUI --> Tutor["In-Lesson Sidebar AI Tutor"]
+        ReadUI --> SandboxUI["Interactive Decision Sandbox"]
+        ReadUI --> Grader["Grader Agent: Evaluates Socratic Answers"]
+        Grader -->|Pass| Unlock["Unlock Next Lesson"]
+        ReadUI --> PDFEngine["Playwright: Export A4 PDF Booklet"]
     end
 ```
 
